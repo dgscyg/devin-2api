@@ -13,6 +13,7 @@
 - **Reasoning / thinking content**: upstream thinking is mapped to the corresponding fields of each protocol.
 - **Image input**: supports base64 data URL images; Responses also accepts `input_image` as a string or `image_url` object, as well as `image_url` parts.
 - **Dashboard**: visit `/panel` for model list, providers, account usage, and price filters.
+- **Free-only model policy**: optionally restrict `/v1/*` to upstream `free` models and lock each model's `max_tokens` / thinking effort from the cached catalog.
 - **Concurrency and connection model**: `server.max_concurrency` limits concurrent `/v1/*` requests; `devin.force_http1` defaults to `true` to avoid HTTP/2 multi-stream serialization by the upstream.
 - **Proxy support**: `http://`, `https://`, `socks5://`, `socks5h://` proxy, or leave empty to use system `HTTP_PROXY` / `HTTPS_PROXY`.
 - **Request-level debug logs**: enable with `debug.enabled`; logs each request lifecycle under `logs/`.
@@ -236,6 +237,13 @@ All settings live in `config.yaml`, loaded once at startup; unknown fields are r
 | `debug.enabled` | Write per-request debug logs under `logs/` | No |
 | `dashboard.password` | Dashboard password; empty = no login | No |
 | `auth.api_key` | API key for `/v1/*`; empty disables auth | No |
+| `models.free_only` | If true, only expose/allow models whose upstream `cost_tier` is `free` | No |
+| `models.allowed_models` | Optional model UID allowlist; intersected with `free_only` | No |
+| `models.blocked_models` | Optional model UID blocklist | No |
+| `models.max_context_tokens` | Extra cap on each model's server `max_tokens`; `0` = use server value | No |
+| `models.max_thinking_effort` | Extra cap on each model's server thinking/reasoning effort; empty = use server value | No |
+
+Context and thinking limits are **not hardcoded**. At startup the gateway caches `GetCascadeModelConfigs`; each free model keeps its own `max_tokens` and thinking effort. Refresh from `/panel` or restart the process to reload. Env overrides: `DEVIN_MODELS_FREE_ONLY`, `DEVIN_MODELS_ALLOWED`, `DEVIN_MODELS_BLOCKED`, `DEVIN_MODELS_MAX_CONTEXT_TOKENS`, `DEVIN_MODELS_MAX_THINKING_EFFORT`.
 
 Full example:
 
@@ -258,6 +266,11 @@ dashboard:
 
 auth:
   api_key: ""
+
+models:
+  free_only: false
+  max_context_tokens: 0
+  max_thinking_effort: ""
 ```
 
 ## Dashboard
@@ -266,7 +279,7 @@ Visit `http://localhost:8080/panel` after starting:
 
 - If `dashboard.password` is empty, the panel is open;
 - With a password set, login is required on first visit; session cookie is valid for 24 hours;
-- Shows available models, their provider/channel, and image support;
+- Shows available models, provider/channel, image support, max_tokens and thinking effort; the catalog can be refreshed manually;
 - Shows account usage and price filtering.
 
 ## Notes

@@ -48,11 +48,11 @@ type Handler struct {
 	cacheMu             sync.RWMutex
 	cacheTTL            time.Duration
 	modelsCache         []map[string]any
-	modelsExpiry        time.Time
 	providersCache      []map[string]any
 	providersExpiry     time.Time
 	modelStatusesCache  []map[string]any
 	modelStatusesExpiry time.Time
+	refreshCatalog      func(context.Context) error
 }
 
 // New 创建面板处理器。password 为空表示开放访问。proxy 为可选代理地址。
@@ -78,6 +78,11 @@ func New(password, baseURL, token, proxy string, forceHTTP1 bool) *Handler {
 	}
 }
 
+// SetCatalogRefresher 注入适配器侧模型目录刷新回调，供面板「手动拉取」同时更新网关缓存。
+func (h *Handler) SetCatalogRefresher(fn func(context.Context) error) {
+	h.refreshCatalog = fn
+}
+
 // Register 将面板路由注册到 mux。有 token 即可启用；密码仅控制是否登录。
 func (h *Handler) Register(mux interface {
 	Get(pattern string, handlerFn http.HandlerFunc)
@@ -87,6 +92,7 @@ func (h *Handler) Register(mux interface {
 	mux.Post("/panel/login", h.handleLogin)
 	mux.Get("/panel/api/status", h.apiStatus)
 	mux.Get("/panel/api/models", h.apiModels)
+	mux.Post("/panel/api/models/refresh", h.apiRefreshModels)
 }
 
 func (h *Handler) servePanel(w http.ResponseWriter, r *http.Request) {
@@ -405,9 +411,39 @@ func (h *Handler) apiModels(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"models": models})
 }
 
+func (h *Handler) apiRefreshModels(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAuth(w, r) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 610*time.Second)
+	defer cancel()
+	h.invalidateModelsCache()
+	if h.refreshCatalog != nil {
+		if err := h.refreshCatalog(ctx); err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprintf(w, `{"error":"%s"}`, err.Error())
+			return
+		}
+	}
+	models, err := h.cachedModels(ctx)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, `{"error":"%s"}`, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "models": models})
+}
+
+func (h *Handler) invalidateModelsCache() {
+	h.cacheMu.Lock()
+	h.modelsCache = nil
+	h.cacheMu.Unlock()
+}
+
 func (h *Handler) cachedModels(ctx context.Context) ([]map[string]any, error) {
 	h.cacheMu.RLock()
-	if h.modelsCache != nil && time.Now().Before(h.modelsExpiry) {
+	if h.modelsCache != nil {
 		cached := h.modelsCache
 		h.cacheMu.RUnlock()
 		return cached, nil
@@ -456,6 +492,7 @@ func (h *Handler) cachedModels(ctx context.Context) ([]map[string]any, error) {
 			"provider":            provider,
 			"api_provider":        apiProvider,
 			"max_tokens":          c.GetMaxTokens(),
+			"thinking_effort":     thinkingEffortFromModelInfo(c.GetModelInfo()),
 			"disabled":            c.GetDisabled(),
 			"is_premium":          c.GetIsPremium(),
 			"is_beta":             c.GetIsBeta(),
@@ -528,12 +565,10 @@ func (h *Handler) cachedModels(ctx context.Context) ([]map[string]any, error) {
 
 	h.cacheMu.Lock()
 	defer h.cacheMu.Unlock()
-	// 请求期间可能有其他 goroutine 已写入缓存，不覆盖更热数据。
-	if h.modelsCache != nil && time.Now().Before(h.modelsExpiry) {
+	if h.modelsCache != nil {
 		return h.modelsCache, nil
 	}
 	h.modelsCache = models
-	h.modelsExpiry = time.Now().Add(h.cacheTTL)
 	return models, nil
 }
 
@@ -641,6 +676,47 @@ func generateSessionID() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func thinkingEffortFromModelInfo(info *devinproto.ExaCodeiumCommonPb_ModelInfo) string {
+	if info == nil {
+		return ""
+	}
+	cfg := info.GetInferenceConfig()
+	if cfg == nil {
+		return ""
+	}
+	if o := cfg.GetOpenai(); o != nil {
+		return strings.ToLower(strings.TrimSpace(o.GetReasoningEffort()))
+	}
+	if g := cfg.GetGoogle(); g != nil {
+		return strings.ToLower(strings.TrimSpace(g.GetReasoningEffort()))
+	}
+	if a := cfg.GetAnthropic(); a != nil {
+		if effort := strings.ToLower(strings.TrimSpace(a.GetEffort())); effort != "" {
+			return effort
+		}
+		if a.GetThinking() {
+			return "default"
+		}
+		return ""
+	}
+	if z := cfg.GetZai(); z != nil {
+		if effort := strings.ToLower(strings.TrimSpace(z.GetEffort())); effort != "" {
+			return effort
+		}
+		if z.GetThinking() {
+			return "default"
+		}
+		return ""
+	}
+	if x := cfg.GetXai(); x != nil {
+		return strings.ToLower(strings.TrimSpace(x.GetReasoningEffort()))
+	}
+	if tm := cfg.GetThinkingMachines(); tm != nil {
+		return strings.ToLower(strings.TrimSpace(tm.GetReasoningEffort()))
+	}
+	return ""
 }
 
 func shortEnum(full, prefix string) string {

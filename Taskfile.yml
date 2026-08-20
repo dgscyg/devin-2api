@@ -54,6 +54,6 @@ tasks:
         {{.PROTO_SRC}}
       - >-
         cd {{.GEN_DIR}} && go mod init {{.GO_PKG}}
-        && go mod edit -go=1.26.3
+        && go mod edit -go=1.27.0
         -require=connectrpc.com/connect@v1.20.0 -require=google.golang.org/protobuf@{{.PROTOBUF_GO_VERSION}}
         && go mod tidy

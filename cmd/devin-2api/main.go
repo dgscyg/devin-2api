@@ -36,7 +36,15 @@ func main() {
 		log.Fatal(err)
 	}
 
+	modelPolicy := adapter.ModelPolicy{
+		FreeOnly:          serviceConfig.Models.FreeOnly,
+		Allowed:           serviceConfig.Models.AllowedModels,
+		Blocked:           serviceConfig.Models.BlockedModels,
+		MaxContextTokens:  serviceConfig.Models.MaxContextTokens,
+		MaxThinkingEffort: serviceConfig.Models.MaxThinkingEffort,
+	}
 	providerAdapter := adapter.Adapter(adapter.Unavailable{Reason: "provider adapter is not configured"})
+	var catalogRefresher func(context.Context) error
 	if serviceConfig.Devin.Token != "" {
 		configured, createErr := devin.New(devin.Config{
 			BaseURL:    serviceConfig.Devin.BaseURL,
@@ -44,11 +52,24 @@ func main() {
 			Model:      serviceConfig.Devin.Model,
 			Proxy:      serviceConfig.Devin.Proxy,
 			ForceHTTP1: serviceConfig.Devin.ForceHTTP1 != nil && *serviceConfig.Devin.ForceHTTP1,
+			Policy:     modelPolicy,
 		})
 		if createErr != nil {
 			log.Fatal(createErr)
 		}
 		providerAdapter = configured
+		catalogRefresher = func(ctx context.Context) error {
+			_, err := configured.RefreshModels(ctx)
+			return err
+		}
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		models, warmErr := configured.ListModels(warmCtx)
+		warmCancel()
+		if warmErr != nil {
+			log.Printf("prefetch model catalog: %v", warmErr)
+		} else {
+			log.Printf("cached %d models from upstream", len(models))
+		}
 	}
 	var debugManager *debuglog.Manager
 	if serviceConfig.Debug.Enabled {
@@ -56,8 +77,14 @@ func main() {
 	}
 	application := app.New(providerAdapter, serviceConfig.Server, debugManager)
 	application.SetAPIKey(serviceConfig.Auth.APIKey)
+	application.SetModelsFilter(modelPolicy.Apply)
+	if modelPolicy.RestrictsAccess() {
+		application.SetRestrictModels(true)
+	}
 	if serviceConfig.Devin.Token != "" {
-		application.SetDashboard(dashboard.New(serviceConfig.Dashboard.Password, serviceConfig.Devin.BaseURL, serviceConfig.Devin.Token, serviceConfig.Devin.Proxy, serviceConfig.Devin.ForceHTTP1 != nil && *serviceConfig.Devin.ForceHTTP1))
+		panel := dashboard.New(serviceConfig.Dashboard.Password, serviceConfig.Devin.BaseURL, serviceConfig.Devin.Token, serviceConfig.Devin.Proxy, serviceConfig.Devin.ForceHTTP1 != nil && *serviceConfig.Devin.ForceHTTP1)
+		panel.SetCatalogRefresher(catalogRefresher)
+		application.SetDashboard(panel)
 	}
 	server := application.HTTPServer()
 	log.Printf("HTTP server listening on %s", listenURL(server.Addr))

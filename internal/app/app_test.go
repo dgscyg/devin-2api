@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,8 @@ import (
 type fakeAdapter struct {
 	lastRequest llm.RequestMessages
 	events      []llm.ResponseEvent
+	models      []adapter.ModelInfo
+	modelsErr   error
 }
 
 func (fake *fakeAdapter) Stream(_ context.Context, request llm.RequestMessages) (llm.ResponseStream, error) {
@@ -30,6 +33,12 @@ func (fake *fakeAdapter) Stream(_ context.Context, request llm.RequestMessages) 
 }
 
 func (fake *fakeAdapter) ListModels(context.Context) ([]adapter.ModelInfo, error) {
+	if fake.modelsErr != nil {
+		return nil, fake.modelsErr
+	}
+	if fake.models != nil {
+		return fake.models, nil
+	}
 	return []adapter.ModelInfo{{ID: "gpt-test", Created: 1, OwnedBy: "test"}}, nil
 }
 
@@ -354,4 +363,126 @@ func TestConcurrentResponsesDoNotInterleave(t *testing.T) {
 		}
 	}
 	wg.Wait()
+}
+
+// TestFreeOnlyFilterListsAndBlocks 验证 free_only 过滤：
+// /v1/models 只返回 free 模型，非 free 模型的生成请求被拒绝。
+func TestFreeOnlyFilterListsAndBlocks(t *testing.T) {
+	fake := &fakeAdapter{
+		events: []llm.ResponseEvent{{Type: llm.ResponseEventDone, Reason: llm.StopReasonStop, Message: &llm.AssistantMessage{
+			ResponseID: "resp-1", ResponseModel: "free-model", StopReason: llm.StopReasonStop,
+		}}},
+	}
+	fake.models = []adapter.ModelInfo{
+		{ID: "free-model", CostTier: adapter.ModelCostTierFree},
+		{ID: "paid-model", CostTier: adapter.ModelCostTierHigh},
+		{ID: "unknown-model", CostTier: ""},
+	}
+	application := New(fake, config.ServerConfig{Listen: ":0"}, nil)
+	application.SetModelsFilter(func(models []adapter.ModelInfo) []adapter.ModelInfo {
+		return adapter.FilterFreeOnly(models, true)
+	})
+	application.SetRestrictModels(true)
+
+	// /v1/models 只保留 free 模型。
+	listRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	listResponse := httptest.NewRecorder()
+	application.Router().ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status = %d: %s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Data) != 1 || listed.Data[0]["id"] != "free-model" {
+		t.Fatalf("listed models = %#v, want only free-model", listed.Data)
+	}
+
+	// 非 free 模型生成请求被拒绝。
+	for _, model := range []string{"paid-model", "unknown-model"} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"`+model+`","input":"hi"}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		application.Router().ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("model %s status = %d, want 403: %s", model, response.Code, response.Body.String())
+		}
+	}
+
+	// free 模型生成请求放行。
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"free-model","input":"hi"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	application.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("free model status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+
+	// /v1/models/{model} 对过滤后不存在的模型返回 404。
+	detail := httptest.NewRequest(http.MethodGet, "/v1/models/paid-model", nil)
+	detailResponse := httptest.NewRecorder()
+	application.Router().ServeHTTP(detailResponse, detail)
+	if detailResponse.Code != http.StatusNotFound {
+		t.Fatalf("model detail status = %d, want 404", detailResponse.Code)
+	}
+
+	if listed.Data[0]["cost_tier"] != adapter.ModelCostTierFree {
+		t.Fatalf("listed cost_tier = %v, want free", listed.Data[0]["cost_tier"])
+	}
+}
+
+// TestRestrictModelsFailsClosedOnCatalogError 验证启用访问限制后，目录拉取失败会拒绝生成请求。
+func TestRestrictModelsFailsClosedOnCatalogError(t *testing.T) {
+	fake := &fakeAdapter{
+		events:    []llm.ResponseEvent{{Type: llm.ResponseEventDone, Reason: llm.StopReasonStop, Message: &llm.AssistantMessage{ResponseID: "resp-1", StopReason: llm.StopReasonStop}}},
+		modelsErr: fmt.Errorf("upstream timeout"),
+	}
+	application := New(fake, config.ServerConfig{Listen: ":0"}, nil)
+	application.SetModelsFilter(func(models []adapter.ModelInfo) []adapter.ModelInfo {
+		return adapter.FilterFreeOnly(models, true)
+	})
+	application.SetRestrictModels(true)
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"free-model","input":"hi"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	application.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", response.Code, response.Body.String())
+	}
+}
+
+// TestModelsListExposesCatalogLimits 验证 /v1/models 暴露服务端 max_tokens 与思考等级。
+func TestModelsListExposesCatalogLimits(t *testing.T) {
+	fake := &fakeAdapter{models: []adapter.ModelInfo{
+		{ID: "glm-5-2", CostTier: adapter.ModelCostTierFree, MaxTokens: 32000, ThinkingEffort: "low", SupportsImages: false},
+	}}
+	application := New(fake, config.ServerConfig{Listen: ":0"}, nil)
+	application.SetModelsFilter((adapter.ModelPolicy{FreeOnly: true}).Apply)
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	response := httptest.NewRecorder()
+	application.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var listed struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Data) != 1 {
+		t.Fatalf("listed = %#v", listed.Data)
+	}
+	entry := listed.Data[0]
+	if entry["id"] != "glm-5-2" || entry["cost_tier"] != "free" || entry["max_thinking_effort"] != "low" {
+		t.Fatalf("entry = %#v", entry)
+	}
+	if tokens, ok := entry["max_tokens"].(float64); !ok || tokens != 32000 {
+		t.Fatalf("max_tokens = %v", entry["max_tokens"])
+	}
 }
