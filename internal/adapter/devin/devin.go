@@ -45,17 +45,17 @@ type Config struct {
 	Proxy string
 	// ForceHTTP1 为 true 时强制 HTTP/1.1，每请求独立连接，避免 HTTP/2 单连接多 stream 并发瓶颈。
 	ForceHTTP1 bool
+	// Policy 是模型目录访问控制与 per-model 上限策略。
+	Policy adapter.ModelPolicy
 }
 
 // Adapter 调用 Devin 的 ApiServerService/GetChatMessage。
 type Adapter struct {
-	config         Config
-	client         devinprotoconnect.ApiServerServiceClient
-	apiClient      devinprotoconnect.ApiServerServiceClient
-	modelsMu       sync.RWMutex
-	models         []adapter.ModelInfo
-	modelsExpiry   time.Time
-	modelsCacheTTL time.Duration
+	config    Config
+	client    devinprotoconnect.ApiServerServiceClient
+	apiClient devinprotoconnect.ApiServerServiceClient
+	modelsMu  sync.RWMutex
+	models    []adapter.ModelInfo
 }
 
 var _ adapter.Adapter = (*Adapter)(nil)
@@ -87,10 +87,9 @@ func New(config Config) (*Adapter, error) {
 	apiClient := devinprotoconnect.NewApiServerServiceClient(apiHTTPClient, config.BaseURL)
 
 	return &Adapter{
-		config:         config,
-		client:         streamClient,
-		apiClient:      apiClient,
-		modelsCacheTTL: 5 * time.Minute,
+		config:    config,
+		client:    streamClient,
+		apiClient: apiClient,
 	}, nil
 }
 
@@ -106,9 +105,18 @@ func (adapter *Adapter) Stream(ctx context.Context, request llm.RequestMessages)
 	if err := validateImagesForModel(request, model); err != nil {
 		return nil, err
 	}
+	info, found, catalogErr := adapter.lookupModel(ctx, model)
+	if adapter.config.Policy.RestrictsAccess() {
+		if catalogErr != nil {
+			return nil, fmt.Errorf("model catalog unavailable: %w", catalogErr)
+		}
+		if !found || !adapter.config.Policy.Allows(info) {
+			return nil, fmt.Errorf("model %q is not available (blocked or not allowed by models filter)", model)
+		}
+	}
 	cfg := adapter.config
 	cfg.Model = model
-	protoRequest, err := buildRequest(request, cfg)
+	protoRequest, err := buildRequest(request, cfg, adapter.config.Policy.RequestMaxTokens(info, found && catalogErr == nil))
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +184,23 @@ func modelLikelySupportsImages(model string) bool {
 	return true
 }
 
+// costTier 把 Devin 成本层级枚举映射为适配器约定小写字符串；
+// 未明确声明时返回空串（不参与 free_only 过滤，视为可用）。
+func costTier(tier devinproto.ExaCodeiumCommonPb_ModelCostTier) string {
+	switch tier {
+	case devinproto.ExaCodeiumCommonPb_ModelCostTier_ExaCodeiumCommonPb_ModelCostTier_MODEL_COST_TIER_FREE:
+		return adapter.ModelCostTierFree
+	case devinproto.ExaCodeiumCommonPb_ModelCostTier_ExaCodeiumCommonPb_ModelCostTier_MODEL_COST_TIER_LOW:
+		return adapter.ModelCostTierLow
+	case devinproto.ExaCodeiumCommonPb_ModelCostTier_ExaCodeiumCommonPb_ModelCostTier_MODEL_COST_TIER_MEDIUM:
+		return adapter.ModelCostTierMedium
+	case devinproto.ExaCodeiumCommonPb_ModelCostTier_ExaCodeiumCommonPb_ModelCostTier_MODEL_COST_TIER_HIGH:
+		return adapter.ModelCostTierHigh
+	default:
+		return ""
+	}
+}
+
 // connectError 提取 Connect 错误的 code + message，原样返回给 HTTP 客户端。
 func connectError(err error) error {
 	if err == nil {
@@ -192,16 +217,25 @@ func connectError(err error) error {
 	return err
 }
 
-// ListModels 通过 GetCascadeModelConfigs 拉取可用模型目录，结果带 TTL 缓存。
+// ListModels 通过 GetCascadeModelConfigs 拉取可用模型目录。
+// 结果缓存在内存中直到进程重启或 RefreshModels。
 func (a *Adapter) ListModels(ctx context.Context) ([]adapter.ModelInfo, error) {
 	a.modelsMu.RLock()
-	if a.models != nil && time.Now().Before(a.modelsExpiry) {
+	if a.models != nil {
 		cached := a.models
 		a.modelsMu.RUnlock()
 		return cached, nil
 	}
 	a.modelsMu.RUnlock()
+	return a.fetchModels(ctx, false)
+}
 
+// RefreshModels 强制从上游重新拉取模型目录并替换内存缓存。
+func (a *Adapter) RefreshModels(ctx context.Context) ([]adapter.ModelInfo, error) {
+	return a.fetchModels(ctx, true)
+}
+
+func (a *Adapter) fetchModels(ctx context.Context, force bool) ([]adapter.ModelInfo, error) {
 	resp, err := a.apiClient.GetCascadeModelConfigs(ctx, connect.NewRequest(&devinproto.GetCascadeModelConfigsRequest{
 		Metadata: &devinproto.ExaCodeiumCommonPb_Metadata{
 			ApiKey:           proto.String(a.config.Token),
@@ -223,26 +257,15 @@ func (a *Adapter) ListModels(ctx context.Context) ([]adapter.ModelInfo, error) {
 		if c.GetDisabled() {
 			continue
 		}
-		uid := c.GetModelUid()
-		if uid == "" && c.GetModelOrAlias() != nil {
-			uid = c.GetModelOrAlias().GetModelUid()
-		}
-		if uid == "" {
+		info, ok := modelInfoFromClientConfig(c, now)
+		if !ok {
 			continue
 		}
-		if _, ok := seen[uid]; ok {
+		if _, exists := seen[info.ID]; exists {
 			continue
 		}
-		seen[uid] = struct{}{}
-		ownedBy := "devin"
-		if p := c.GetProvider().String(); p != "" {
-			if i := strings.LastIndex(p, "_"); i >= 0 && i+1 < len(p) {
-				ownedBy = strings.ToLower(p[i+1:])
-			}
-		}
-		models = append(models, adapter.ModelInfo{
-			ID: uid, Created: now, OwnedBy: ownedBy, SupportsImages: c.GetSupportsImages(),
-		})
+		seen[info.ID] = struct{}{}
+		models = append(models, info)
 	}
 	// 用户显式配置的 model（如 gpt5.6）即使不在 Devin 返回的列表中，也应可被发现和调用。
 	if configured := strings.TrimSpace(a.config.Model); configured != "" {
@@ -257,13 +280,104 @@ func (a *Adapter) ListModels(ctx context.Context) ([]adapter.ModelInfo, error) {
 
 	a.modelsMu.Lock()
 	defer a.modelsMu.Unlock()
-	// 请求期间可能有其他请求已写入缓存，避免覆盖更热的数据。
-	if a.models != nil && time.Now().Before(a.modelsExpiry) {
+	if !force && a.models != nil {
 		return a.models, nil
 	}
 	a.models = models
-	a.modelsExpiry = time.Now().Add(a.modelsCacheTTL)
 	return models, nil
+}
+
+func (a *Adapter) lookupModel(ctx context.Context, id string) (adapter.ModelInfo, bool, error) {
+	models, err := a.ListModels(ctx)
+	if err != nil {
+		return adapter.ModelInfo{}, false, err
+	}
+	for _, model := range models {
+		if model.ID == id {
+			return model, true, nil
+		}
+	}
+	return adapter.ModelInfo{}, false, nil
+}
+
+// modelInfoFromClientConfig 把上游 ClientModelConfig 映射为对外目录条目。
+func modelInfoFromClientConfig(c *devinproto.ExaCodeiumCommonPb_ClientModelConfig, now int64) (adapter.ModelInfo, bool) {
+	if c == nil {
+		return adapter.ModelInfo{}, false
+	}
+	uid := c.GetModelUid()
+	if uid == "" && c.GetModelOrAlias() != nil {
+		uid = c.GetModelOrAlias().GetModelUid()
+	}
+	if uid == "" {
+		return adapter.ModelInfo{}, false
+	}
+	ownedBy := "devin"
+	if p := c.GetProvider().String(); p != "" {
+		if i := strings.LastIndex(p, "_"); i >= 0 && i+1 < len(p) {
+			ownedBy = strings.ToLower(p[i+1:])
+		}
+	}
+	maxTokens := c.GetMaxTokens()
+	if maxTokens <= 0 {
+		if info := c.GetModelInfo(); info != nil {
+			maxTokens = info.GetMaxTokens()
+			if maxTokens <= 0 {
+				maxTokens = info.GetMaxOutputTokens()
+			}
+		}
+	}
+	return adapter.ModelInfo{
+		ID:             uid,
+		Created:        now,
+		OwnedBy:        ownedBy,
+		SupportsImages: c.GetSupportsImages(),
+		CostTier:       costTier(c.GetModelCostTier()),
+		MaxTokens:      maxTokens,
+		ThinkingEffort: thinkingEffortFromModelInfo(c.GetModelInfo()),
+	}, true
+}
+
+// thinkingEffortFromModelInfo 读取服务端 InferenceConfig 中的思考/推理等级。
+func thinkingEffortFromModelInfo(info *devinproto.ExaCodeiumCommonPb_ModelInfo) string {
+	if info == nil {
+		return ""
+	}
+	cfg := info.GetInferenceConfig()
+	if cfg == nil {
+		return ""
+	}
+	if o := cfg.GetOpenai(); o != nil {
+		return strings.ToLower(strings.TrimSpace(o.GetReasoningEffort()))
+	}
+	if g := cfg.GetGoogle(); g != nil {
+		return strings.ToLower(strings.TrimSpace(g.GetReasoningEffort()))
+	}
+	if a := cfg.GetAnthropic(); a != nil {
+		if effort := strings.ToLower(strings.TrimSpace(a.GetEffort())); effort != "" {
+			return effort
+		}
+		if a.GetThinking() {
+			return "default"
+		}
+		return ""
+	}
+	if z := cfg.GetZai(); z != nil {
+		if effort := strings.ToLower(strings.TrimSpace(z.GetEffort())); effort != "" {
+			return effort
+		}
+		if z.GetThinking() {
+			return "default"
+		}
+		return ""
+	}
+	if x := cfg.GetXai(); x != nil {
+		return strings.ToLower(strings.TrimSpace(x.GetReasoningEffort()))
+	}
+	if tm := cfg.GetThinkingMachines(); tm != nil {
+		return strings.ToLower(strings.TrimSpace(tm.GetReasoningEffort()))
+	}
+	return ""
 }
 
 type authTransport struct {
@@ -277,7 +391,7 @@ func (transport *authTransport) RoundTrip(request *http.Request) (*http.Response
 	return transport.base.RoundTrip(clone)
 }
 
-func buildRequest(request llm.RequestMessages, config Config) (*devinproto.GetChatMessageRequest, error) {
+func buildRequest(request llm.RequestMessages, config Config, maxTokens uint64) (*devinproto.GetChatMessageRequest, error) {
 	fingerprint, err := randomHex(366)
 	if err != nil {
 		return nil, fmt.Errorf("generate Devin device fingerprint: %w", err)
@@ -302,7 +416,6 @@ func buildRequest(request llm.RequestMessages, config Config) (*devinproto.GetCh
 		RequestType:  devinproto.ChatMessageRequestType_CHAT_MESSAGE_REQUEST_TYPE_CASCADE.Enum(),
 		Configuration: &devinproto.ExaCodeiumCommonPb_CompletionConfiguration{
 			NumCompletions: proto.Uint64(1),
-			MaxTokens:      proto.Uint64(128000),
 			MaxNewlines:    proto.Uint64(400),
 			Temperature:    proto.Float64(1),
 			TopK:           proto.Uint64(40),
@@ -316,6 +429,9 @@ func buildRequest(request llm.RequestMessages, config Config) (*devinproto.GetCh
 		CascadeId:   proto.String(cascadeID),
 		PlannerMode: devinproto.ExaCodeiumCommonPb_ConversationalPlannerMode_ExaCodeiumCommonPb_ConversationalPlannerMode_CONVERSATIONAL_PLANNER_MODE_DEFAULT.Enum(),
 		ExecutionId: proto.String(executionID),
+	}
+	if maxTokens > 0 {
+		result.Configuration.MaxTokens = proto.Uint64(maxTokens)
 	}
 	// Devin/Cascade 只可靠接受「当前轮」图片；历史图进 Images 会 invalid_argument。
 	// 当前轮 = 最后一条 AssistantMessage 之后的所有 user/tool 消息。

@@ -14,6 +14,7 @@ import (
 	devinproto "local/devinproto"
 
 	"connectrpc.com/connect"
+	"github.com/dgscyg/devin-2api/internal/adapter"
 	"github.com/dgscyg/devin-2api/internal/debuglog"
 	"github.com/dgscyg/devin-2api/internal/llm"
 	"google.golang.org/protobuf/proto"
@@ -63,7 +64,7 @@ func TestBuildRequestMapsLoopMessages(t *testing.T) {
 			{Name: "read", Description: "read file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
 		},
 	}
-	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"})
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"}, adapter.DefaultMaxTokens)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +127,79 @@ func TestBuildRequestMapsLoopMessages(t *testing.T) {
 	if converted.GetConfiguration().GetMaxNewlines() != 400 {
 		t.Fatalf("max newlines = %d, want 400", converted.GetConfiguration().GetMaxNewlines())
 	}
+	if converted.GetConfiguration().GetMaxTokens() != adapter.DefaultMaxTokens {
+		t.Fatalf("max tokens = %d, want default %d", converted.GetConfiguration().GetMaxTokens(), adapter.DefaultMaxTokens)
+	}
+}
+
+// TestBuildRequestUsesCatalogMaxTokens 验证上游请求使用模型目录中的 max_tokens，而不是写死 128000。
+func TestBuildRequestUsesCatalogMaxTokens(t *testing.T) {
+	request := llm.RequestMessages{
+		Messages: []llm.Message{llm.UserMessage{Content: []llm.Content{llm.TextContent{Text: "hi"}}}},
+	}
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "glm-5-2"}, 32000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.GetConfiguration().GetMaxTokens() != 32000 {
+		t.Fatalf("max tokens = %d, want 32000 from catalog", converted.GetConfiguration().GetMaxTokens())
+	}
+}
+
+// TestBuildRequestOmitsMaxTokensWhenUnknown 验证 free_only 且目录未知时省略 MaxTokens，避免误发 128000。
+func TestBuildRequestOmitsMaxTokensWhenUnknown(t *testing.T) {
+	request := llm.RequestMessages{
+		Messages: []llm.Message{llm.UserMessage{Content: []llm.Content{llm.TextContent{Text: "hi"}}}},
+	}
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "glm-5-2"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.GetConfiguration().MaxTokens != nil {
+		t.Fatalf("max tokens = %d, want omitted", converted.GetConfiguration().GetMaxTokens())
+	}
+}
+
+func TestModelInfoFromClientConfig(t *testing.T) {
+	uid := "glm-5-2"
+	maxTokens := int32(32000)
+	effort := "low"
+	cfg := &devinproto.ExaCodeiumCommonPb_ClientModelConfig{
+		ModelUid:       proto.String(uid),
+		SupportsImages: proto.Bool(false),
+		MaxTokens:      proto.Int32(maxTokens),
+		ModelCostTier:  devinproto.ExaCodeiumCommonPb_ModelCostTier_ExaCodeiumCommonPb_ModelCostTier_MODEL_COST_TIER_FREE.Enum(),
+		ModelInfo: &devinproto.ExaCodeiumCommonPb_ModelInfo{
+			InferenceConfig: &devinproto.ExaCodeiumCommonPb_InferenceConfig{
+				Config: &devinproto.ExaCodeiumCommonPb_InferenceConfig_Zai{
+					Zai: &devinproto.ExaCodeiumCommonPb_ZaiInferenceConfig{Effort: proto.String(effort)},
+				},
+			},
+		},
+	}
+	info, ok := modelInfoFromClientConfig(cfg, 1)
+	if !ok {
+		t.Fatal("modelInfoFromClientConfig = false, want true")
+	}
+	if info.ID != uid || info.CostTier != adapter.ModelCostTierFree || info.MaxTokens != maxTokens || info.ThinkingEffort != effort {
+		t.Fatalf("mapped info = %#v", info)
+	}
+}
+
+func TestThinkingEffortFromModelInfo(t *testing.T) {
+	if got := thinkingEffortFromModelInfo(nil); got != "" {
+		t.Fatalf("nil info = %q, want empty", got)
+	}
+	info := &devinproto.ExaCodeiumCommonPb_ModelInfo{
+		InferenceConfig: &devinproto.ExaCodeiumCommonPb_InferenceConfig{
+			Config: &devinproto.ExaCodeiumCommonPb_InferenceConfig_Anthropic{
+				Anthropic: &devinproto.ExaCodeiumCommonPb_AnthropicInferenceConfig{Thinking: proto.Bool(true)},
+			},
+		},
+	}
+	if got := thinkingEffortFromModelInfo(info); got != "default" {
+		t.Fatalf("anthropic thinking without effort = %q, want default", got)
+	}
 }
 
 // TestValidateImagesForModelRejectsGLM 验证无视觉模型带图时返回可读错误（透传给客户端）。
@@ -177,7 +251,7 @@ func TestBuildRequestOmitsHistoricalImages(t *testing.T) {
 			}},
 		},
 	}
-	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"})
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"}, adapter.DefaultMaxTokens)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +287,7 @@ func TestBuildRequestAttachesImagesInSameTurn(t *testing.T) {
 			llm.ToolResultMessage{ToolCallID: "tc1", ToolName: "read", Content: []llm.Content{llm.TextContent{Text: "file content"}}},
 		},
 	}
-	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"})
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"}, adapter.DefaultMaxTokens)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +308,7 @@ func TestBuildRequestAttachesImagesInSameTurn(t *testing.T) {
 // TestBuildRequestWithoutToolsKeepsPromptUnchanged 的测试动机是确保工具转换不会污染纯文本请求。
 func TestBuildRequestWithoutToolsKeepsPromptUnchanged(t *testing.T) {
 	request := llm.RequestMessages{SystemPrompt: "system", Messages: []llm.Message{llm.UserMessage{Content: []llm.Content{llm.TextContent{Text: "hello"}}}}}
-	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"})
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"}, adapter.DefaultMaxTokens)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +329,7 @@ func TestBuildRequestIgnoresEmptyToolDescriptions(t *testing.T) {
 			{Name: "read", Description: "  read a file  ", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}
-	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"})
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"}, adapter.DefaultMaxTokens)
 	if err != nil {
 		t.Fatal(err)
 	}

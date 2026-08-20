@@ -13,6 +13,7 @@
 - **推理/thinking 内容**：自动把上游思考过程映射到各协议对应字段。
 - **图片输入**：支持 base64 data URL 形式的图片；Responses 兼容 `input_image` 字符串与 `image_url` 对象、`image_url` part 等写法。
 - **管理面板**：访问 `/panel` 查看模型列表、渠道/供应商、账户用量与价格筛选。
+- **Free-only 模型策略**：可配置仅允许服务端 `free` 模型，并按缓存的模型目录锁定每个模型自己的 `max_tokens` 和思考等级。
 - **流控与连接模型**：`server.max_concurrency` 限制并发；`devin.force_http1` 默认强制 HTTP/1.1，避免 HTTP/2 单连接多 stream 被上游串行处理。
 - **代理**：支持 `http://`、`https://`、`socks5://`、`socks5h://` 代理，或留空走系统 `HTTP_PROXY` / `HTTPS_PROXY`。
 - **请求级调试日志**：开启 `debug.enabled` 后在 `logs/` 目录下输出每请求的完整链路。
@@ -236,6 +237,13 @@ curl http://localhost:8080/v1/models
 | `debug.enabled` | 在配置文件同目录 `logs/` 下写请求级调试日志 | 否 |
 | `dashboard.password` | 管理面板密码；留空无需登录 | 否 |
 | `auth.api_key` | `/v1/*` 接口访问密钥；留空不鉴权 | 否 |
+| `models.free_only` | 为 true 时仅允许访问服务端 `cost_tier=free` 的模型 | 否 |
+| `models.allowed_models` | 可选模型 UID 白名单；与 `free_only` 取交集 | 否 |
+| `models.blocked_models` | 可选模型 UID 黑名单 | 否 |
+| `models.max_context_tokens` | 对每个模型服务端 `max_tokens` 的额外上限；`0` 表示使用服务端值 | 否 |
+| `models.max_thinking_effort` | 对每个模型服务端思考等级的额外上限；留空表示使用服务端值 | 否 |
+
+上下文和思考等级**不会写死成一份全局值**。服务启动时从 `GetCascadeModelConfigs` 拉取并缓存在内存中，每个 free 模型使用自己的 `max_tokens` 和思考等级。需要更新时在管理面板点「刷新目录」，或重启进程。环境变量：`DEVIN_MODELS_FREE_ONLY`、`DEVIN_MODELS_ALLOWED`、`DEVIN_MODELS_BLOCKED`、`DEVIN_MODELS_MAX_CONTEXT_TOKENS`、`DEVIN_MODELS_MAX_THINKING_EFFORT`。
 
 完整示例：
 
@@ -258,6 +266,11 @@ dashboard:
 
 auth:
   api_key: ""
+
+models:
+  free_only: false
+  max_context_tokens: 0
+  max_thinking_effort: ""
 ```
 
 ## 管理面板
@@ -266,7 +279,7 @@ auth:
 
 - `dashboard.password` 为空时直接进入；
 - 设置密码后，首次访问需登录，会话 cookie 24 小时有效；
-- 展示当前可用模型、所属渠道/供应商、图片能力；
+- 展示当前可用模型、所属渠道/供应商、图片能力、max_tokens 与思考等级；可手动刷新目录；
 - 展示账户用量、价格区间与筛选。
 
 ## 注意事项

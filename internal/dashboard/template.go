@@ -76,6 +76,11 @@ h1{font-size:22px;margin-bottom:16px;color:#7c8aff}
 .chip:hover{border-color:#7c8aff;color:#fff}
 .chip.on{background:#7c8aff22;border-color:#7c8aff;color:#aab4ff}
 .stats{font-size:12px;color:#888;margin-bottom:8px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.section-head h2{margin-bottom:0}
+.btn{padding:8px 12px;border:1px solid #333;border-radius:8px;background:#222632;color:#e0e0e0;font-size:13px;cursor:pointer}
+.btn:hover{border-color:#7c8aff;color:#fff}
+.btn:disabled{opacity:.6;cursor:wait}
 .model-scroll{max-height:70vh;overflow:auto;border:1px solid #222;border-radius:8px}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{text-align:left;padding:8px 10px;border-bottom:2px solid #333;color:#888;font-weight:600;position:sticky;top:0;background:#1a1d27;z-index:1;white-space:nowrap}
@@ -113,7 +118,10 @@ tr:hover{background:#222632}
 </div>
 
 <div class="section">
+<div class="section-head">
 <h2>模型列表 · 价格 · 筛选</h2>
+<button class="btn" id="refreshModels" type="button" onclick="refreshModels()">刷新目录</button>
+</div>
 <div class="filters">
 <input type="search" id="search" placeholder="搜索 UID / 标签 / 描述 / 系列..." oninput="applyFilters()">
 <select id="fProvider" onchange="applyFilters()"><option value="">全部渠道</option></select>
@@ -158,6 +166,8 @@ tr:hover{background:#222632}
 <th>Model</th>
 <th>渠道</th>
 <th>等级</th>
+<th>max_tokens</th>
+<th>思考</th>
 <th>倍率</th>
 <th>Input $/1M</th>
 <th>Cached $/1M</th>
@@ -166,12 +176,13 @@ tr:hover{background:#222632}
 <th>标签</th>
 </tr>
 </thead>
-<tbody><tr><td colspan="10" class="loading">加载中...</td></tr></tbody>
+<tbody><tr><td colspan="12" class="loading">加载中...</td></tr></tbody>
 </table>
 </div>
 <div class="note">
 <strong>价格说明：</strong>
 <code>credit_multiplier</code> 是 Windsurf credit 消耗倍率。FREE 模型倍率为 0 表示不扣分；其它模型若上游未单独下发倍率，通常按基准 1.0 理解。
+<code>max_tokens</code> / 思考等级来自服务端模型配置，网关在 <code>free_only</code> 时按每个模型自己的上限锁定，而不是写死一份全局值。「刷新目录」会重新拉取并更新网关内存缓存。
 <code>Input / Cached / Output</code> 来自 <code>model_dimensions</code>，单位通常是 <strong>$ / 1M tokens</strong>；上游还可能提供 min~max（不同 effort 区间）。
 <code>PROMO</code> 表示促销中。计费类型：STATIC_CREDIT=固定 credit、API=按 API、BYOK=自带 Key、ACU_*=ACU 计费。
 </div>
@@ -421,7 +432,7 @@ function renderModels(models){
 const tbody=document.querySelector('#modelTable tbody');
 document.getElementById('stats').textContent='显示 '+models.length+' / 共 '+allModels.length+' 个模型';
 if(!models.length){
-tbody.innerHTML='<tr><td colspan="10" class="loading">无匹配模型</td></tr>';
+tbody.innerHTML='<tr><td colspan="12" class="loading">无匹配模型</td></tr>';
 return;
 }
 let html='';
@@ -437,6 +448,8 @@ html+='<div class="muted mono">'+esc(m.api_provider)+'</div>';
 }
 html+='</td>';
 html+='<td>'+esc(m.cost_tier||'-')+'</td>';
+html+='<td class="mono">'+esc(m.max_tokens||'-')+'</td>';
+html+='<td class="mono">'+esc(m.thinking_effort||'-')+'</td>';
 html+='<td>'+multDisplay(m)+'</td>';
 html+='<td>'+money(m.price_input)+'</td>';
 html+='<td>'+money(m.price_cached)+'</td>';
@@ -448,10 +461,24 @@ html+='</tr>';
 tbody.innerHTML=html;
 }
 
-async function loadModels(){
-const res=await fetch('/panel/api/models');
+async function refreshModels(){
+const btn=document.getElementById('refreshModels');
+if(btn) btn.disabled=true;
+try{
+const res=await fetch('/panel/api/models/refresh',{method:'POST'});
 const data=await res.json();
+if(!res.ok){throw new Error(data.error||('HTTP '+res.status))}
 allModels=data.models||[];
+fillModelFilters();
+applyFilters();
+}catch(e){
+document.getElementById('stats').textContent='刷新失败: '+(e.message||e);
+}finally{
+if(btn) btn.disabled=false;
+}
+}
+
+function fillModelFilters(){
 const providers=new Set(), apis=new Set(), pricings=new Set();
 allModels.forEach(m=>{
 if(m.provider) providers.add(m.provider);
@@ -461,6 +488,13 @@ if(m.pricing_type) pricings.add(m.pricing_type);
 fillSelect('fProvider',providers);
 fillSelect('fApi',apis);
 fillSelect('fPricing',pricings);
+}
+
+async function loadModels(){
+const res=await fetch('/panel/api/models');
+const data=await res.json();
+allModels=data.models||[];
+fillModelFilters();
 applyFilters();
 }
 

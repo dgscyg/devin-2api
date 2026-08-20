@@ -56,6 +56,10 @@ type App struct {
 	dashboard DashboardRegistrar
 	// apiKey 是可选的 OpenAI 兼容接口访问密钥；为空则不校验。
 	apiKey string
+	// modelsFilter 是可选的模型目录过滤函数；nil 表示不过滤。
+	modelsFilter func([]adapter.ModelInfo) []adapter.ModelInfo
+	// restrictModels 为 true 时，目录拉取失败会拒绝生成请求，避免落到付费模型。
+	restrictModels bool
 	// concurrency 限制同时处理的 /v1/* 请求数。
 	concurrency chan struct{}
 }
@@ -77,6 +81,17 @@ func New(providerAdapter adapter.Adapter, serverConfig config.ServerConfig, debu
 // SetAPIKey 设置 OpenAI 兼容接口的访问密钥；应在 Router/HTTPServer 之前调用。
 func (application *App) SetAPIKey(apiKey string) {
 	application.apiKey = apiKey
+}
+
+// SetModelsFilter 设置模型目录过滤函数；应在 Router/HTTPServer 之前调用。
+// 过滤同时作用于 /v1/models 列表和每次生成请求的模型可用性校验。
+func (application *App) SetModelsFilter(filter func([]adapter.ModelInfo) []adapter.ModelInfo) {
+	application.modelsFilter = filter
+}
+
+// SetRestrictModels 在启用访问限制时失败关闭：目录不可用则拒绝生成请求。
+func (application *App) SetRestrictModels(restrict bool) {
+	application.restrictModels = restrict
 }
 
 // SetDashboard 注入管理面板处理器。
@@ -133,22 +148,10 @@ func (application *App) listModels(writer http.ResponseWriter, request *http.Req
 		writeJSONError(writer, http.StatusBadGateway, err.Error())
 		return
 	}
+	models = application.applyModelsFilter(models)
 	data := make([]map[string]any, 0, len(models))
 	for _, m := range models {
-		created := m.Created
-		if created == 0 {
-			created = time.Now().Unix()
-		}
-		ownedBy := m.OwnedBy
-		if ownedBy == "" {
-			ownedBy = "devin"
-		}
-		entry := map[string]any{
-			"id": m.ID, "object": "model", "created": created, "owned_by": ownedBy,
-		}
-		// 非 OpenAI 标准字段，供面板/客户端识别是否可传图。
-		entry["supports_images"] = m.SupportsImages
-		data = append(data, entry)
+		data = append(data, modelJSON(m))
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(writer).Encode(map[string]any{"object": "list", "data": data})
@@ -170,25 +173,69 @@ func (application *App) getModel(writer http.ResponseWriter, request *http.Reque
 		writeJSONError(writer, http.StatusBadGateway, err.Error())
 		return
 	}
+	models = application.applyModelsFilter(models)
 	for _, m := range models {
 		if m.ID == id {
-			created := m.Created
-			if created == 0 {
-				created = time.Now().Unix()
-			}
-			ownedBy := m.OwnedBy
-			if ownedBy == "" {
-				ownedBy = "devin"
-			}
 			writer.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(writer).Encode(map[string]any{
-				"id": m.ID, "object": "model", "created": created, "owned_by": ownedBy,
-				"supports_images": m.SupportsImages,
-			})
+			_ = json.NewEncoder(writer).Encode(modelJSON(m))
 			return
 		}
 	}
 	writeJSONError(writer, http.StatusNotFound, fmt.Sprintf("model %q not found", id))
+}
+
+func modelJSON(m adapter.ModelInfo) map[string]any {
+	created := m.Created
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+	ownedBy := m.OwnedBy
+	if ownedBy == "" {
+		ownedBy = "devin"
+	}
+	entry := map[string]any{
+		"id": m.ID, "object": "model", "created": created, "owned_by": ownedBy,
+		"supports_images": m.SupportsImages,
+	}
+	if m.CostTier != "" {
+		entry["cost_tier"] = m.CostTier
+	}
+	if m.MaxTokens > 0 {
+		entry["max_tokens"] = m.MaxTokens
+	}
+	if m.ThinkingEffort != "" {
+		entry["max_thinking_effort"] = m.ThinkingEffort
+	}
+	return entry
+}
+
+// applyModelsFilter 应用已配置的模型目录过滤；未配置时原样返回。
+func (application *App) applyModelsFilter(models []adapter.ModelInfo) []adapter.ModelInfo {
+	if application.modelsFilter == nil {
+		return models
+	}
+	return application.modelsFilter(models)
+}
+
+// checkModelAccess 校验模型是否出现在过滤后的目录中。
+// 未配置过滤时放行；配置了访问限制且目录拉取失败时返回错误，避免落到付费模型。
+func (application *App) checkModelAccess(ctx context.Context, model string) error {
+	if !application.restrictModels || application.modelsFilter == nil || model == "" {
+		return nil
+	}
+	models, err := application.adapter.ListModels(ctx)
+	if err != nil {
+		if application.restrictModels {
+			return fmt.Errorf("model catalog unavailable: %w", err)
+		}
+		return nil
+	}
+	for _, available := range application.applyModelsFilter(models) {
+		if available.ID == model {
+			return nil
+		}
+	}
+	return fmt.Errorf("model %q is not available (blocked or not allowed by models filter)", model)
 }
 
 func writeJSONError(writer http.ResponseWriter, status int, message string) {
@@ -301,6 +348,14 @@ func (application *App) createCompletion(
 	completion.Stream = options.Stream
 	recorder.WriteJSON("02-request-messages.json", debuglog.RequestMessagesProjection(messages))
 	ctx := debuglog.WithRecorder(request.Context(), recorder)
+	if err := application.checkModelAccess(ctx, messages.Model); err != nil {
+		completion.StatusCode = http.StatusForbidden
+		if application.restrictModels && strings.Contains(err.Error(), "model catalog unavailable") {
+			completion.StatusCode = http.StatusBadGateway
+		}
+		writeLoggedError(writer, recorder, "models_filter", completion.StatusCode, err)
+		return
+	}
 	stream, err := application.adapter.Stream(ctx, messages)
 	if err != nil {
 		completion.StatusCode = mapProviderErrorStatus(err)
@@ -540,8 +595,11 @@ func mapProviderErrorStatus(err error) int {
 		strings.HasPrefix(msg, "unauthenticated:"):
 		return http.StatusUnauthorized
 	case strings.Contains(msg, "permission_denied"),
-		strings.HasPrefix(msg, "permission_denied:"):
+		strings.HasPrefix(msg, "permission_denied:"),
+		strings.Contains(msg, "not allowed by models filter"):
 		return http.StatusForbidden
+	case strings.Contains(msg, "model catalog unavailable"):
+		return http.StatusBadGateway
 	case strings.Contains(msg, "not_found"),
 		strings.HasPrefix(msg, "not_found:"):
 		return http.StatusNotFound
