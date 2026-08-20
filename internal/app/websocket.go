@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/dgscyg/devin-2api/internal/llm"
+	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{
