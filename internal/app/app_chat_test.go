@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/config"
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/config"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // TestChatCompletionsHandlerStreamsSSE 验证 chat 流式返回 data-only SSE。

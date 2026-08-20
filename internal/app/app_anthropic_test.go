@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/config"
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/config"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // TestMessagesHandlerStreamsSSE 验证 Anthropic 流式返回 event + data 的 SSE。

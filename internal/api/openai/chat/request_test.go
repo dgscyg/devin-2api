@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // TestDecodeRequestBuildsConversationContext 验证系统提示词、多模态输入、工具和工具结果的保留。

@@ -12,7 +12,7 @@ import (
 
 	devinproto "local/devinproto"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 	"google.golang.org/protobuf/proto"
 )
 

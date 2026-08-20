@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/leookun/devin-2api/internal/httpproxy"
+	"github.com/dgscyg/devin-2api/internal/httpproxy"
 
 	devinproto "local/devinproto"
 	"local/devinproto/devinprotoconnect"

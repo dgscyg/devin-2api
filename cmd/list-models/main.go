@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/leookun/devin-2api/internal/config"
+	"github.com/dgscyg/devin-2api/internal/config"
 	devinproto "local/devinproto"
 	"local/devinproto/devinprotoconnect"
 

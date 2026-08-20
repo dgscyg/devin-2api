@@ -145,7 +145,7 @@ Concurrent requests in the same second are distinguished by an incrementing suff
 
 Releases follow [SemVer](https://semver.org/). While the project is in the 0.x phase, breaking changes bump the minor version (`v0.1.0` → `v0.2.0`), not the major one.
 
-A release is a `v`-prefixed tag. `gh release create` tags the current `HEAD`, pushes the tag, and creates the GitHub Release page with auto-generated notes — which triggers the `release.yml` workflow (full test suite, then a Docker image build + push to Docker Hub `leokun123/devin-2api` for amd64 and arm64):
+A release is a `v`-prefixed tag. `gh release create` tags the current `HEAD`, pushes the tag, and creates the GitHub Release page with auto-generated notes — which triggers the `release.yml` workflow (full test suite, then a Docker image build + push to GHCR `ghcr.io/dgscyg/devin-2api` for amd64 and arm64):
 
 ```bash
 gh release create v0.1.0 --generate-notes
@@ -154,7 +154,7 @@ gh release create v0.1.0 --generate-notes
 Notes:
 
 - the workflow tags the image as `0.1.0`, `0.1`, `0`, and `latest` (pre-releases like `v0.2.0-rc.1` skip `latest`);
-- the workflow reads the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` repository secrets — the maintainer must set them once (token created at [hub.docker.com/settings/security](https://hub.docker.com/settings/security), not the login password);
+- the workflow logs in to GHCR using the `GITHUB_TOKEN` — no extra secrets are needed;
 - tags are immutable once pushed; fix a bad release by releasing a new version, never by rewriting the tag.
 
 ## Updating the upstream protocol (proto extraction)

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/leookun/devin-2api/internal/api/common"
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/api/common"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // Request 是 OpenAI Chat Completions 请求中本适配器支持的字段集合。

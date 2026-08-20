@@ -27,3 +27,26 @@ auth:
   # OpenAI 兼容接口访问密钥；留空则不校验，任何客户端均可调用 /v1/*。
   # 客户端可通过 Authorization: Bearer <api_key> 或 X-Api-Key: <api_key> 传递。
   api_key: ""
+
+models:
+  # free_only: 为 true 时仅允许访问 free 成本层级的模型。
+  # 上下文 token 上限和思考等级从服务端返回的模型配置中动态获取，非硬编码。
+  # 可通过环境变量 DEVIN_MODELS_FREE_ONLY=true 覆盖。
+  free_only: false
+  # allowed_models: 允许访问的模型 UID 白名单；留空表示不限制。
+  # 与 free_only 叠加时取交集。
+  # 可通过环境变量 DEVIN_MODELS_ALLOWED=glm-5-2,swe-1-7 覆盖。
+  # allowed_models:
+  #   - "glm-5-2"
+  #   - "swe-1-7"
+  # blocked_models: 禁止访问的模型 UID 黑名单。
+  # 可通过环境变量 DEVIN_MODELS_BLOCKED=gpt-4o 覆盖。
+  # blocked_models:
+  #   - "gpt-4o"
+  # max_context_tokens: 对服务端模型配置的额外 token 上限覆盖；0 表示使用服务端值。
+  # 设置后取 min(服务端 max_tokens, 此值) 作为实际上限。
+  # 可通过环境变量 DEVIN_MODELS_MAX_CONTEXT_TOKENS=64000 覆盖。
+  max_context_tokens: 0
+  # max_thinking_effort: 对服务端模型配置的额外思考等级上限覆盖；留空表示使用服务端值。
+  # 可通过环境变量 DEVIN_MODELS_MAX_THINKING_EFFORT=low 覆盖。
+  max_thinking_effort: ""

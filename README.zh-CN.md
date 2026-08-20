@@ -87,7 +87,7 @@ Docker：
 ```bash
 docker run --rm -p 8080:8080 \
   -v "$PWD/config.yaml:/app/config.yaml" \
-  leokun123/devin-2api --config /app/config.yaml
+  ghcr.io/dgscyg/devin-2api --config /app/config.yaml
 ```
 
 ### 4. 验证

@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,15 +47,15 @@ jobs:
         id: meta
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          TAGS="docker.io/leokun123/devin-2api:${VERSION}"
+          TAGS="ghcr.io/dgscyg/devin-2api:${VERSION}"
           # 仅稳定版（无 - 后缀）推 MINOR/MAJOR 浮动 tag：v0.1.0 → 0.1, 0
           if [[ "${VERSION}" != *-* ]]; then
             MINOR="${VERSION%.*}"
             MAJOR="${VERSION%%.*}"
-            TAGS="${TAGS},docker.io/leokun123/devin-2api:${MINOR},docker.io/leokun123/devin-2api:${MAJOR}"
+            TAGS="${TAGS},ghcr.io/dgscyg/devin-2api:${MINOR},ghcr.io/dgscyg/devin-2api:${MAJOR}"
           fi
           # 所有发布（含预发布）都更新 latest
-          TAGS="${TAGS},docker.io/leokun123/devin-2api:latest"
+          TAGS="${TAGS},ghcr.io/dgscyg/devin-2api:latest"
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -64,11 +65,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

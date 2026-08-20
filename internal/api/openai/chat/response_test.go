@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // TestStreamEncoderEmitsRoleAndText 验证流式文本产生 role chunk 和 content delta。

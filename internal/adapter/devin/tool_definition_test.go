@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // TestWithToolDescriptionsNumbersProseAndPreservesCode 的测试动机是避免连续能力声明触发上游策略误判，同时保持代码示例完整。

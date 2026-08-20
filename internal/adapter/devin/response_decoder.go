@@ -9,7 +9,7 @@ import (
 
 	devinproto "local/devinproto"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // responseDecoder 保存一次 Devin 请求内的响应累计状态和内容映射。

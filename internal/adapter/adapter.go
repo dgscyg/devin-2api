@@ -6,7 +6,7 @@ package adapter
 import (
 	"context"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // ModelInfo 是对外暴露的模型目录条目（OpenAI /v1/models 形状）。

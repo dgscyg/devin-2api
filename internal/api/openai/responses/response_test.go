@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // TestStreamEncoderEncodesReasoningAndToolItems 的测试动机是保证思考和工具调用作为独立 output item 完整结束并进入最终 output。

@@ -2,7 +2,7 @@
 package debuglog
 
 import (
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // RequestMessagesProjection 将含接口字段的 RequestMessages 转成可读 JSON 结构。

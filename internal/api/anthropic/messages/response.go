@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leookun/devin-2api/internal/api/common"
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/api/common"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // SSEEvent 是单个 Anthropic SSE 事件。

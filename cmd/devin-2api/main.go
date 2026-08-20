@@ -15,12 +15,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/leookun/devin-2api/internal/adapter"
-	"github.com/leookun/devin-2api/internal/adapter/devin"
-	"github.com/leookun/devin-2api/internal/app"
-	"github.com/leookun/devin-2api/internal/config"
-	"github.com/leookun/devin-2api/internal/dashboard"
-	"github.com/leookun/devin-2api/internal/debuglog"
+	"github.com/dgscyg/devin-2api/internal/adapter"
+	"github.com/dgscyg/devin-2api/internal/adapter/devin"
+	"github.com/dgscyg/devin-2api/internal/app"
+	"github.com/dgscyg/devin-2api/internal/config"
+	"github.com/dgscyg/devin-2api/internal/dashboard"
+	"github.com/dgscyg/devin-2api/internal/debuglog"
 )
 
 func main() {

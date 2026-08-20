@@ -4,7 +4,7 @@ package messages
 import (
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // TestDecodeRequestBuildsConversationContext 验证 system、image、tool_use 和 tool_result 的保留。

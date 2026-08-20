@@ -20,10 +20,10 @@ import (
 	"local/devinproto/devinprotoconnect"
 
 	"connectrpc.com/connect"
-	"github.com/leookun/devin-2api/internal/adapter"
-	"github.com/leookun/devin-2api/internal/debuglog"
-	"github.com/leookun/devin-2api/internal/httpproxy"
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/adapter"
+	"github.com/dgscyg/devin-2api/internal/debuglog"
+	"github.com/dgscyg/devin-2api/internal/httpproxy"
+	"github.com/dgscyg/devin-2api/internal/llm"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

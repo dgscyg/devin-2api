@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // Unavailable 是尚未配置具体供应商时使用的占位适配器。

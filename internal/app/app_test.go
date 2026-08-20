@@ -13,10 +13,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/leookun/devin-2api/internal/adapter"
-	"github.com/leookun/devin-2api/internal/config"
-	"github.com/leookun/devin-2api/internal/debuglog"
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/adapter"
+	"github.com/dgscyg/devin-2api/internal/config"
+	"github.com/dgscyg/devin-2api/internal/debuglog"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 type fakeAdapter struct {

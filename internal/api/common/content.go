@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/leookun/devin-2api/internal/llm"
+	"github.com/dgscyg/devin-2api/internal/llm"
 )
 
 // ErrImageShape 表示无法识别的图片值形态。
