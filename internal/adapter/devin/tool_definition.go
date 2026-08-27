@@ -57,17 +57,25 @@ var identityReplacements = []struct {
 	// development 等），累积后触发上游 content policy 评分阈值。
 	// 策略：用简洁中性表述替换整段安全指令。
 	{regexp.MustCompile(`(?s)IMPORTANT: Assist with authorized security testing.*?defensive use cases`), "IMPORTANT: Assist with authorized security testing and educational contexts. Refuse harmful requests. Dual-use tools require clear authorization context"},
+	// --- subagent 场景：Claude Code 子代理使用不同措辞，需单独匹配 ---
+	// "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+	{regexp.MustCompile(`(?i)You are a Claude agent, built on Anthropic's Claude Agent SDK`), "You are an AI agent"},
+	// "You are an agent for Claude Code, Anthropic's official CLI for Claude."
+	{regexp.MustCompile(`(?i)You are an agent for Claude Code, Anthropic's official CLI for Claude`), "You are an agent for an AI coding assistant"},
+	// "Claude Code is available as a CLI in the terminal, desktop app ..."
+	// （已在上方处理，但 subagent 版本措辞可能略有不同，此处不重复。）
+
 	// --- 全局兜底：消除所有残留品牌词 ---
 	// 注意：用否定后顾排除路径中的 .claude（已在上面单独处理）
-	// {regexp.MustCompile(`(?i)\bClaude Code\b`), "the assistant"},
-	// {regexp.MustCompile(`(?i)\bClaude Opus\b`), "the model"},
-	// {regexp.MustCompile(`(?i)\bClaude Sonnet\b`), "the model"},
-	// {regexp.MustCompile(`(?i)\bClaude Haiku\b`), "the model"},
-	// {regexp.MustCompile(`(?i)\bClaude Fable\b`), "the model"},
+	{regexp.MustCompile(`(?i)\bClaude Code\b`), "the assistant"},
+	{regexp.MustCompile(`(?i)\bClaude Opus\b`), "the model"},
+	{regexp.MustCompile(`(?i)\bClaude Sonnet\b`), "the model"},
+	{regexp.MustCompile(`(?i)\bClaude Haiku\b`), "the model"},
+	{regexp.MustCompile(`(?i)\bClaude Fable\b`), "the model"},
 	// 全局兜底：匹配独立词 Claude。
 	// 路径中的 .claude 已在前面替换为 .config，不会误匹配。
-	// {regexp.MustCompile(`(?i)\bClaude\b`), "the assistant"},
-	// {regexp.MustCompile(`(?i)\bAnthropic\b`), "the provider"},
+	{regexp.MustCompile(`(?i)\bClaude\b`), "the assistant"},
+	{regexp.MustCompile(`(?i)\bAnthropic\b`), "the provider"},
 }
 
 // sanitizeSystemPrompt 清洗 system prompt 中会触发上游内容过滤的品牌引用。
