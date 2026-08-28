@@ -65,6 +65,10 @@ var identityReplacements = []struct {
 	// "Claude Code is available as a CLI in the terminal, desktop app ..."
 	// （已在上方处理，但 subagent 版本措辞可能略有不同，此处不重复。）
 
+	// --- Cursor IDE 场景：Cursor 系统提示词和工具描述中的品牌引用 ---
+	// "You operate in Cursor."
+	{regexp.MustCompile(`(?i)You operate in Cursor`), "You operate in the IDE"},
+
 	// --- 全局兜底：消除所有残留品牌词 ---
 	// 注意：用否定后顾排除路径中的 .claude（已在上面单独处理）
 	{regexp.MustCompile(`(?i)\bClaude Code\b`), "the assistant"},
@@ -76,6 +80,12 @@ var identityReplacements = []struct {
 	// 路径中的 .claude 已在前面替换为 .config，不会误匹配。
 	{regexp.MustCompile(`(?i)\bClaude\b`), "the assistant"},
 	{regexp.MustCompile(`(?i)\bAnthropic\b`), "the provider"},
+	// Cursor IDE 品牌：排除 cursor- 前缀（工具名如 cursor-app-control-*）。
+	// .cursor 路径需先于全局 Cursor 替换，否则路径中的 Cursor 会被先替换。
+	{regexp.MustCompile(`(?i)\.cursor([/\\])`), ".config$1"},
+	// RE2 不支持 lookahead/lookbehind，用捕获组保留 Cursor 后面的非标识符字符。
+	// \bCursor 后跟非 [a-zA-Z0-9_-] 字符或行尾时才替换，跳过 cursor-xxx 形式的工具名。
+	{regexp.MustCompile(`(?i)\bCursor([^a-zA-Z0-9_\-]|$)`), "the IDE$1"},
 }
 
 // sanitizeSystemPrompt 清洗 system prompt 中会触发上游内容过滤的品牌引用。
