@@ -83,6 +83,9 @@ var identityReplacements = []struct {
 	// Cursor IDE 品牌：排除 cursor- 前缀（工具名如 cursor-app-control-*）。
 	// .cursor 路径需先于全局 Cursor 替换，否则路径中的 Cursor 会被先替换。
 	{regexp.MustCompile(`(?i)\.cursor([/\\])`), ".config$1"},
+	// cursor-guide 是 subagent 类型名（非工具名、非模型名），出现在 Task 工具描述正文中，
+	// 需要在全局 cursor- 排除规则之前单独替换。
+	{regexp.MustCompile(`(?i)cursor-guide`), "guide-agent"},
 	// RE2 不支持 lookahead/lookbehind，用捕获组保留 Cursor 后面的非标识符字符。
 	// \bCursor 后跟非 [a-zA-Z0-9_-] 字符或行尾时才替换，跳过 cursor-xxx 形式的工具名。
 	{regexp.MustCompile(`(?i)\bCursor([^a-zA-Z0-9_\-]|$)`), "the IDE$1"},
