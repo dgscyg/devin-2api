@@ -450,6 +450,18 @@ func buildRequest(request llm.RequestMessages, config Config, maxTokens uint64) 
 		}
 		result.ChatMessagePrompts = append(result.ChatMessagePrompts, converted...)
 	}
+	// 无任何 USER 来源消息时（如对话压缩/总结请求只带 assistant+tool 历史），
+	// 把系统提示词作为当前用户轮追加，确保上游有可回应的用户请求，
+	// 避免 Devin/Windsurf 因缺失用户轮直接返回空响应。
+	if !hasUserMessage(request.Messages) {
+		if system := strings.TrimSpace(sanitizeSystemPrompt(request.SystemPrompt)); system != "" {
+			result.ChatMessagePrompts = append(result.ChatMessagePrompts, &devinproto.ExaChatPb_ChatMessagePrompt{
+				MessageId: proto.String(randomID()),
+				Source:    devinproto.ExaCodeiumCommonPb_ChatMessageSource_ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_USER.Enum(),
+				Prompt:    proto.String(system),
+			})
+		}
+	}
 	for _, tool := range request.Tools {
 		converted, err := convertToolDefinition(tool)
 		if err != nil {
@@ -462,6 +474,15 @@ func buildRequest(request llm.RequestMessages, config Config, maxTokens uint64) 
 
 // convertMessage 将中间消息转为 Devin ChatMessagePrompt。
 // attachImages 为 true 时才把 ImageContent 写入 Images（仅最新用户轮）；历史图改成文本占位。
+func hasUserMessage(messages []llm.Message) bool {
+	for _, message := range messages {
+		if _, ok := message.(llm.UserMessage); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func convertMessage(message llm.Message, attachImages bool) ([]*devinproto.ExaChatPb_ChatMessagePrompt, error) {
 	switch message := message.(type) {
 	case llm.UserMessage:
