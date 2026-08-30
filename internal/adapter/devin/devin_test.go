@@ -339,6 +339,60 @@ func TestBuildRequestIgnoresEmptyToolDescriptions(t *testing.T) {
 	}
 }
 
+// TestBuildRequestAppendsUserPromptWhenOnlyHistoricalMessages 的测试动机是确保对话压缩/总结请求
+//（只带 assistant+tool 历史、没有 user 消息）会以系统提示词作为当前用户轮追加，
+// 避免上游因缺失用户请求轮直接返回空响应。
+func TestBuildRequestAppendsUserPromptWhenOnlyHistoricalMessages(t *testing.T) {
+	request := llm.RequestMessages{
+		SystemPrompt: "Summarize the conversation for the next model turn. Return only the summary.",
+		Messages: []llm.Message{
+			llm.AssistantMessage{Content: []llm.Content{llm.TextContent{Text: "I will read the files."}}},
+			llm.AssistantMessage{Content: []llm.Content{llm.ToolCall{ID: "call-1", Name: "read", Arguments: json.RawMessage(`{"path":"a.go"}`)}}},
+			llm.ToolResultMessage{ToolCallID: "call-1", ToolName: "read", Content: []llm.Content{llm.TextContent{Text: "content"}}},
+		},
+	}
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"}, adapter.DefaultMaxTokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := converted.GetChatMessagePrompts()
+	if len(prompts) != 4 {
+		t.Fatalf("prompts = %d, want 4 (3 history + 1 synthesized user)", len(prompts))
+	}
+	last := prompts[len(prompts)-1]
+	if last.GetSource() != devinproto.ExaCodeiumCommonPb_ChatMessageSource_ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_USER {
+		t.Fatalf("last prompt source = %v, want USER", last.GetSource())
+	}
+	if last.GetPrompt() != "Summarize the conversation for the next model turn. Return only the summary." {
+		t.Fatalf("last prompt text = %q, want system prompt", last.GetPrompt())
+	}
+}
+
+// TestBuildRequestKeepsUserPromptsWithoutSynthesizing 的测试动机是确保存在 user 消息时不额外追加，
+// 避免改变正常对话的结构。
+func TestBuildRequestKeepsUserPromptsWithoutSynthesizing(t *testing.T) {
+	request := llm.RequestMessages{
+		SystemPrompt: "system",
+		Messages: []llm.Message{
+			llm.UserMessage{Content: []llm.Content{llm.TextContent{Text: "hello"}}},
+			llm.AssistantMessage{Content: []llm.Content{llm.TextContent{Text: "hi"}}},
+			llm.ToolResultMessage{ToolCallID: "call-1", ToolName: "read", Content: []llm.Content{llm.TextContent{Text: "ok"}}},
+		},
+	}
+	converted, err := buildRequest(request, Config{BaseURL: "https://example.com", Token: "token", Model: "model"}, adapter.DefaultMaxTokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := converted.GetChatMessagePrompts()
+	if len(prompts) != 3 {
+		t.Fatalf("prompts = %d, want 3 without synthesized user", len(prompts))
+	}
+	last := prompts[len(prompts)-1]
+	if last.GetSource() != devinproto.ExaCodeiumCommonPb_ChatMessageSource_ExaCodeiumCommonPb_ChatMessageSource_CHAT_MESSAGE_SOURCE_TOOL {
+		t.Fatalf("last prompt source = %v, want TOOL unchanged", last.GetSource())
+	}
+}
+
 // TestResponseDecoderMapsOneFrameToOrderedEvents 的测试动机是明确一个 Devin protobuf 帧可以包含多个 loop 语义。
 func TestResponseDecoderMapsOneFrameToOrderedEvents(t *testing.T) {
 	decoder := newResponseDecoder("model")
