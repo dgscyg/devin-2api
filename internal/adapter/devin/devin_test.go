@@ -340,7 +340,7 @@ func TestBuildRequestIgnoresEmptyToolDescriptions(t *testing.T) {
 }
 
 // TestBuildRequestAppendsUserPromptWhenOnlyHistoricalMessages 的测试动机是确保对话压缩/总结请求
-//（只带 assistant+tool 历史、没有 user 消息）会以系统提示词作为当前用户轮追加，
+// （只带 assistant+tool 历史、没有 user 消息）会以系统提示词作为当前用户轮追加，
 // 避免上游因缺失用户请求轮直接返回空响应。
 func TestBuildRequestAppendsUserPromptWhenOnlyHistoricalMessages(t *testing.T) {
 	request := llm.RequestMessages{
