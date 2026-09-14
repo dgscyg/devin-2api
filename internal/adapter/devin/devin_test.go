@@ -616,6 +616,42 @@ func TestResponseDecoderRejectsEmptyNormalEOF(t *testing.T) {
 	}
 }
 
+// TestResponseDecoderRejectsContentFilterStop 的测试动机是避免上游内容过滤
+// （只回 STOP_REASON_CONTENT_FILTER、不带任何内容）被当成"成功但空内容"的响应，
+// 客户端只看到空响应而拿不到过滤原因。
+func TestResponseDecoderRejectsContentFilterStop(t *testing.T) {
+	decoder := newResponseDecoder("model")
+	decoder.start()
+	decoder.decode(&devinproto.GetChatMessageResponse{
+		StopReason: devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_CONTENT_FILTER.Enum(),
+	})
+	event := decoder.finish(nil)[0]
+	if event.Type != llm.ResponseEventError || event.Error == nil {
+		t.Fatalf("event = %#v, want content-filter error", event)
+	}
+	if !strings.Contains(event.Error.ErrorMessage, "STOP_REASON_CONTENT_FILTER") {
+		t.Fatalf("error message = %q, want STOP_REASON_CONTENT_FILTER", event.Error.ErrorMessage)
+	}
+}
+
+// TestResponseDecoderRejectsEmptyResponseWithStopReason 的测试动机是把
+// "有停止原因但零内容"也报成错误，并在文案里带上停止原因便于定位。
+func TestResponseDecoderRejectsEmptyResponseWithStopReason(t *testing.T) {
+	decoder := newResponseDecoder("model")
+	decoder.start()
+	decoder.decode(&devinproto.GetChatMessageResponse{
+		StopReason: devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_STOP_PATTERN.Enum(),
+	})
+	event := decoder.finish(nil)[0]
+	if event.Type != llm.ResponseEventError || event.Error == nil {
+		t.Fatalf("event = %#v, want empty-response error", event)
+	}
+	want := "Devin returned an empty response (stop_reason=STOP_PATTERN)"
+	if event.Error.ErrorMessage != want {
+		t.Fatalf("error message = %q, want %q", event.Error.ErrorMessage, want)
+	}
+}
+
 // TestResponseDecoderCompletesPartialWithThinking 验证 STOP_REASON_PARTIAL 不吞掉已生成的思考/文本。
 func TestResponseDecoderCompletesPartialWithThinking(t *testing.T) {
 	decoder := newResponseDecoder("model")
@@ -645,6 +681,7 @@ func TestMapStopReason(t *testing.T) {
 		{devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_PARTIAL, llm.StopReasonLength},
 		{devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_FUNCTION_CALL, llm.StopReasonToolUse},
 		{devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_ERROR, llm.StopReasonError},
+		{devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_CONTENT_FILTER, llm.StopReasonError},
 		{devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_STOP_PATTERN, llm.StopReasonStop},
 	}
 	for _, testCase := range cases {

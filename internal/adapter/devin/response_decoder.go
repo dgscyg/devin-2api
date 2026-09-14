@@ -4,6 +4,7 @@ package devin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -46,6 +47,8 @@ type responseDecoder struct {
 	hasStopReason bool
 	// stopReason 保存 Devin 声明的最终停止原因，等待上游 EOF 后用于完成响应。
 	stopReason llm.StopReason
+	// rawStopReason 保存 Devin 原始停止原因枚举，用于把内容过滤和空响应报成可诊断的错误。
+	rawStopReason devinproto.ExaCodeiumCommonPb_StopReason
 }
 
 // toolState 保存一次 Devin 工具调用的累计状态。
@@ -97,6 +100,7 @@ func (decoder *responseDecoder) decode(response *devinproto.GetChatMessageRespon
 	}
 	if response.GetStopReason() != devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_UNSPECIFIED {
 		decoder.hasStopReason = true
+		decoder.rawStopReason = response.GetStopReason()
 		decoder.stopReason = mapStopReason(response.GetStopReason())
 	}
 	return events
@@ -110,8 +114,18 @@ func (decoder *responseDecoder) finish(upstreamErr error) []llm.ResponseEvent {
 		// 流中途/结束时的 Connect 错误同样透传原文。
 		return decoder.fail(connectError(upstreamErr))
 	}
-	if !decoder.hasStopReason && len(decoder.partial.Content) == 0 && len(decoder.tools) == 0 {
-		return decoder.fail(errors.New("Devin stream ended without generated content"))
+	// 上游内容过滤命中时只回一个 STOP_REASON_CONTENT_FILTER 且不带任何内容。
+	// 必须显式报错，否则会落到下面的默认 StopReasonStop，把被拦截的请求
+	// 伪装成"成功但内容为空"的响应。
+	if decoder.hasStopReason && decoder.rawStopReason == devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_CONTENT_FILTER {
+		return decoder.fail(errors.New("Devin stopped with STOP_REASON_CONTENT_FILTER: upstream content filter rejected this request"))
+	}
+	if len(decoder.partial.Content) == 0 && len(decoder.tools) == 0 {
+		if !decoder.hasStopReason {
+			return decoder.fail(errors.New("Devin stream ended without generated content"))
+		}
+		// 带停止原因但零内容同样不可用：把停止原因写进错误文案，避免客户端只看到空响应。
+		return decoder.fail(fmt.Errorf("Devin returned an empty response (stop_reason=%s)", stopReasonLabel(decoder.rawStopReason)))
 	}
 	reason := decoder.stopReason
 	if !decoder.hasStopReason {
@@ -320,8 +334,21 @@ func (decoder *responseDecoder) fail(err error) []llm.ResponseEvent {
 	return []llm.ResponseEvent{{Type: llm.ResponseEventError, Reason: llm.StopReasonError, Error: &decoder.partial}}
 }
 
+// stopReasonLabel 把原始停止原因枚举裁剪成简短可读的名字，例如 STOP_REASON_CONTENT_FILTER → CONTENT_FILTER。
+func stopReasonLabel(reason devinproto.ExaCodeiumCommonPb_StopReason) string {
+	const prefix = "STOP_REASON_"
+	name := reason.String()
+	if index := strings.LastIndex(name, prefix); index >= 0 {
+		return name[index+len(prefix):]
+	}
+	return name
+}
+
 func mapStopReason(reason devinproto.ExaCodeiumCommonPb_StopReason) llm.StopReason {
 	switch reason {
+	case devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_CONTENT_FILTER:
+		// 内容过滤命中：按错误处理，避免被当成正常结束。
+		return llm.StopReasonError
 	case devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_MAX_TOKENS,
 		devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_INCOMPLETE,
 		devinproto.ExaCodeiumCommonPb_StopReason_ExaCodeiumCommonPb_StopReason_STOP_REASON_PARTIAL:
