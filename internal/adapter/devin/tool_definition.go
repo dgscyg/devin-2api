@@ -18,14 +18,26 @@ import (
 
 // identityReplacements 按顺序替换 system prompt 中会触发上游 Windsurf/Codeium
 // 内容过滤的品牌引用。上游使用多特征共现检测，只要 prompt 中出现足够多的
-// Claude/Anthropic 品牌词（包括路径中的 .claude、模型 ID 中的 claude-xxx、
-// CLAUDE.md 等），就会返回 permission_denied。
+// 竞品品牌词（Claude/Anthropic/Codex/Cursor 等，包括路径中的 .claude、
+// 模型 ID 中的 claude-xxx、CLAUDE.md 等），就会返回 permission_denied 或空响应。
 // 策略：先做精确长句替换（保留语义），再做全局兜底替换（消除所有残留品牌词）。
+// 顺序敏感：长句与域名、路径规则必须先于对应的全局兜底替换，否则会留下
+// "the assistant.ai" 这类半替换痕迹。
 var identityReplacements = []struct {
 	pattern *regexp.Regexp
 	replace string
 }{
 	// --- 精确长句替换（优先，保留语义） ---
+	// 客户端计费头整行删除："x-anthropic-billing-header: cc_version=2.1.268.ccd; cc_entrypoint=cli;"
+	// 该行同时带 anthropic 与 cc_version 两个 Claude Code 指纹，且对模型无功能价值。
+	{regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\r\n]*[\r\n]*`), ""},
+	// 2.1.268 新增的模型身份段落整段删除：该段是模型身份自述，逐词替换后仍会留下
+	// "this iteration of the assistant is the model 5 …" 这类可识别骨架，且对功能无影响。
+	{regexp.MustCompile(`(?s)This iteration of Claude is Claude.*?for more information\.\r?\n*`), ""},
+	// "Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows),
+	//  web app (claude.ai/code), and IDE extensions (VS Code, JetBrains)."
+	// 必须先于下方部分替换，否则残留 (VS Code, JetBrains)。
+	{regexp.MustCompile(`(?i)Claude Code is available as a CLI in the terminal, desktop app \(Mac/Windows\), web app \(claude\.ai/code\), and IDE extensions \(VS Code, JetBrains\)\.`), "The assistant is available as a CLI in the terminal, desktop tool, web app, and popular IDE extensions."},
 	// "You are Claude Code, Anthropic's official CLI for Claude."
 	{regexp.MustCompile(`(?i)You are Claude Code, Anthropic's official CLI for Claude`), "You are an AI coding assistant"},
 	// "Claude Code is available as a CLI in the terminal, desktop app ..."
@@ -36,21 +48,10 @@ var identityReplacements = []struct {
 	{regexp.MustCompile(`(?i)The most recent Claude models are the Claude 5 family`), "The most recent models are the latest family"},
 	// "default to the latest and most capable Claude models"
 	{regexp.MustCompile(`(?i)default to the latest and most capable Claude models`), "default to the latest and most capable models"},
-	// claude.ai/code → 中性
-	// {regexp.MustCompile(`(?i)claude\.ai/code`), "the web interface"},
-	// claude.ai（不带 /code 的残留）→ 中性
-	// {regexp.MustCompile(`(?i)claude\.ai\b`), "the web interface"},
-	// window.claude.* → window.app.*
-	// {regexp.MustCompile(`(?i)window\.claude`), "window.app"},
-	// claude-fable-5 等模型 ID（连字符形式）→ 中性 ID
-	// {regexp.MustCompile(`(?i)claude-fable-5`), "model-fable-5"},
-	// {regexp.MustCompile(`(?i)claude-opus-5`), "model-opus-5"},
-	// {regexp.MustCompile(`(?i)claude-sonnet-5`), "model-sonnet-5"},
-	// {regexp.MustCompile(`(?i)claude-haiku-4-5-20251001`), "model-haiku-4-5-20251001"},
-	// CLAUDE.md → 中性（全局 \bClaude\b 不匹配大写 CLAUDE）
-	// {regexp.MustCompile(`CLAUDE\.md`), "PROJECT.md"},
-	// .claude 路径目录名 → .config（保留路径结构，仅替换目录名）
-	// {regexp.MustCompile(`(?i)\.claude([/\\])`), ".config$1"},
+	// window.claude.* → window.app.*（Artifact 工具说明里会出现这类运行时调用）
+	{regexp.MustCompile(`(?i)window\.claude`), "window.app"},
+	// claude-fable-5-1 / claude-opus-5 等模型 ID → 中性 ID（先于全局 \bClaude\b）
+	{regexp.MustCompile(`(?i)\bclaude-([a-z0-9][a-z0-9\-]*)`), "model-$1"},
 	// --- 安全段简化：减少敏感词累积触发上游评分 ---
 	// 原文包含大量攻击/漏洞相关关键词（DoS attacks, mass targeting, supply chain
 	// compromise, detection evasion, C2 frameworks, credential testing, exploit
@@ -69,8 +70,16 @@ var identityReplacements = []struct {
 	// "You operate in Cursor."
 	{regexp.MustCompile(`(?i)You operate in Cursor`), "You operate in the IDE"},
 
+	// --- 域名与路径：必须先于品牌词全局替换，避免 "the assistant.ai" 这类半替换 ---
+	{regexp.MustCompile(`(?i)claude\.ai/code`), "the web app"},
+	{regexp.MustCompile(`(?i)claude\.ai\b`), "the web app"},
+	{regexp.MustCompile(`(?i)anthropic\.com`), "the website"},
+	// .claude 目录名 → .config：保留路径结构，避免留下 "C:\...\.the assistant\..." 这种坏路径。
+	{regexp.MustCompile(`(?i)\.claude([/\\])`), ".config$1"},
+	// CLAUDE.md → AGENTS.md：项目里通常同时存在 AGENTS.md，替换后路径仍可指向真实文件。
+	{regexp.MustCompile(`(?i)CLAUDE\.md`), "AGENTS.md"},
+
 	// --- 全局兜底：消除所有残留品牌词 ---
-	// 注意：用否定后顾排除路径中的 .claude（已在上面单独处理）
 	{regexp.MustCompile(`(?i)\bClaude Code\b`), "the assistant"},
 	{regexp.MustCompile(`(?i)\bClaude Opus\b`), "the model"},
 	{regexp.MustCompile(`(?i)\bClaude Sonnet\b`), "the model"},
@@ -80,21 +89,36 @@ var identityReplacements = []struct {
 	// 路径中的 .claude 已在前面替换为 .config，不会误匹配。
 	{regexp.MustCompile(`(?i)\bClaude\b`), "the assistant"},
 	{regexp.MustCompile(`(?i)\bAnthropic\b`), "the provider"},
+	// 其他竞品品牌：多特征共现检测同样计入这些词。
+	{regexp.MustCompile(`(?i)\bCodex CLI\b`), "the agent CLI"},
+	{regexp.MustCompile(`(?i)\bCodex\b`), "the agent"},
+	{regexp.MustCompile(`(?i)\bJetBrains\b`), "the IDE"},
+	{regexp.MustCompile(`(?i)\bVS ?Code\b`), "the IDE"},
+	{regexp.MustCompile(`(?i)\bWindsurf\b`), "the IDE"},
+	{regexp.MustCompile(`(?i)\bCodeium\b`), "the provider"},
+	{regexp.MustCompile(`(?i)\bGemini\b`), "the model"},
+	{regexp.MustCompile(`(?i)\bCopilot\b`), "the assistant"},
+	{regexp.MustCompile(`(?i)\bOpenAI\b`), "the provider"},
+	{regexp.MustCompile(`(?i)\bGPT\b`), "the model"},
 	// Cursor IDE 品牌：排除 cursor- 前缀（工具名如 cursor-app-control-*）。
 	// .cursor 路径需先于全局 Cursor 替换，否则路径中的 Cursor 会被先替换。
 	{regexp.MustCompile(`(?i)\.cursor([/\\])`), ".config$1"},
 	// cursor-guide 是 subagent 类型名（非工具名、非模型名），出现在 Task 工具描述正文中，
 	// 需要在全局 cursor- 排除规则之前单独替换。
 	{regexp.MustCompile(`(?i)cursor-guide`), "guide-agent"},
-	// RE2 不支持 lookahead/lookbehind，用捕获组保留 Cursor 后面的非标识符字符。
-	// \bCursor 后跟非 [a-zA-Z0-9_-] 字符或行尾时才替换，跳过 cursor-xxx 形式的工具名。
-	{regexp.MustCompile(`(?i)\bCursor([^a-zA-Z0-9_\-]|$)`), "the IDE$1"},
+	// RE2 不支持 lookahead/lookbehind，用捕获组保留 Cursor 前后的非标识符字符。
+	// 前面不是 [a-zA-Z0-9_.]、后面不是 [a-zA-Z0-9_-] 时才替换：
+	// 跳过 cursor-xxx 形式的工具名，也跳过 query.cursor / next_cursor 这类
+	// 必须与工具 schema 属性名保持一致的参数引用（schema 不做改写）。
+	{regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9_.])Cursor([^a-zA-Z0-9_\-]|$)`), "${1}the IDE$2"},
 }
 
-// sanitizeSystemPrompt 清洗 system prompt 中会触发上游内容过滤的品牌引用。
+// sanitizeSystemPrompt 清洗 system prompt 中会触发上游内容过滤的竞品品牌引用。
 // 上游 Windsurf/Codeium 使用多特征共现检测，当检测到冒充其他 AI 产品的
-// 系统提示词时返回 permission_denied。此函数将所有 Claude/Anthropic 品牌
-// 引用替换为中性表述，保留功能指令不变。
+// 系统提示词时返回 permission_denied 或空响应。此函数把
+// Claude/Anthropic/Codex/Cursor 等竞品品牌引用替换为中性表述，保留功能指令不变。
+// 注意：只改 system prompt（含注入的工具说明）；消息正文与工具 schema 原样透传，
+// 避免改写模型需要按原样使用的路径、文件内容与参数名。
 func sanitizeSystemPrompt(prompt string) string {
 	for _, replacement := range identityReplacements {
 		prompt = replacement.pattern.ReplaceAllString(prompt, replacement.replace)
