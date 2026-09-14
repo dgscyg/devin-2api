@@ -339,6 +339,57 @@ func TestBuildRequestIgnoresEmptyToolDescriptions(t *testing.T) {
 	}
 }
 
+// TestSanitizeSystemPromptScrubsCompetitorBrands 的测试动机是覆盖 Claude Code 2.1.268
+// 新增的计费头与模型身份段落，以及此前漏掉的竞品品牌词（Codex/JetBrains/VS Code）；
+// 同时确保路径与参数引用（.claude、CLAUDE.md、query.cursor、next_cursor）
+// 被替换成仍可用的写法，而不是留下半替换痕迹。
+func TestSanitizeSystemPromptScrubsCompetitorBrands(t *testing.T) {
+	prompt := strings.Join([]string{
+		"x-anthropic-billing-header: cc_version=2.1.268.ccd; cc_entrypoint=cli;",
+		"You are Claude Code, Anthropic's official CLI for Claude.",
+		"",
+		"This iteration of Claude is Claude Fable 5, the first model in Anthropic's new Claude 5 family and part of a new Mythos-class model tier that sits above Claude Opus in capability. Claude Fable 5 and Claude Mythos 5 share the same underlying model. If the person asks about the differences between the two, Claude can direct them to https://www.anthropic.com/news/claude-fable-5-mythos-5 for more information.",
+		"",
+		"# Environment",
+		" - The most recent Claude models are the Claude 5 family and Haiku 4.5. Model IDs — Fable 5.1: 'claude-fable-5-1'.",
+		" - Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).",
+		" - Memory lives in `C:\\Users\\ken\\.claude\\projects\\demo\\memory\\`, project rules in `CLAUDE.md`; Codex CLI users keep hooks in `.codex/`.",
+		" - Page with `query.limit` and `query.cursor` (from a result's `next_cursor`); artifacts open in Cursor.",
+	}, "\n")
+
+	sanitized := sanitizeSystemPrompt(prompt)
+
+	banned := []string{"Claude", "claude", "Anthropic", "anthropic", "Codex", "codex", "JetBrains", "VS Code", "Cursor", "cc_version", "Mythos", "This iteration of"}
+	for _, token := range banned {
+		if strings.Contains(sanitized, token) {
+			t.Fatalf("sanitized prompt still contains %q:\n%s", token, sanitized)
+		}
+	}
+	required := []string{
+		"You are an AI coding assistant.",
+		"The assistant is available as a CLI in the terminal, desktop tool, web app, and popular IDE extensions.",
+		"model-fable-5-1",
+		`.config\projects\demo\memory\`,
+		"AGENTS.md",
+		"query.cursor",
+		"next_cursor",
+		"the agent CLI",
+		// 整段删除后不留多余空行，前后段落紧凑衔接。
+		"\n\n# Environment",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(sanitized, fragment) {
+			t.Fatalf("sanitized prompt missing %q:\n%s", fragment, sanitized)
+		}
+	}
+	if strings.Contains(sanitized, "billing-header") {
+		t.Fatalf("billing header line should be removed entirely:\n%s", sanitized)
+	}
+	if !strings.HasPrefix(sanitized, "You are an AI coding assistant.") {
+		t.Fatalf("billing header removal should leave the identity line at the prompt head:\n%s", sanitized)
+	}
+}
+
 // TestBuildRequestAppendsUserPromptWhenOnlyHistoricalMessages 的测试动机是确保对话压缩/总结请求
 // （只带 assistant+tool 历史、没有 user 消息）会以系统提示词作为当前用户轮追加，
 // 避免上游因缺失用户请求轮直接返回空响应。
