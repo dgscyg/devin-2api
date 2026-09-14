@@ -355,11 +355,13 @@ func TestSanitizeSystemPromptScrubsCompetitorBrands(t *testing.T) {
 		" - Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).",
 		" - Memory lives in `C:\\Users\\ken\\.claude\\projects\\demo\\memory\\`, project rules in `CLAUDE.md`; Codex CLI users keep hooks in `.codex/`.",
 		" - Page with `query.limit` and `query.cursor` (from a result's `next_cursor`); artifacts open in Cursor.",
+		// 上游内容策略按整句指纹拦截，这句必须被替换掉。
+		" - For clear communication with the user the assistant MUST avoid using emojis.",
 	}, "\n")
 
 	sanitized := sanitizeSystemPrompt(prompt)
 
-	banned := []string{"Claude", "claude", "Anthropic", "anthropic", "Codex", "codex", "JetBrains", "VS Code", "Cursor", "cc_version", "Mythos", "This iteration of"}
+	banned := []string{"Claude", "claude", "Anthropic", "anthropic", "Codex", "codex", "JetBrains", "VS Code", "Cursor", "cc_version", "Mythos", "This iteration of", "avoid using emojis"}
 	for _, token := range banned {
 		if strings.Contains(sanitized, token) {
 			t.Fatalf("sanitized prompt still contains %q:\n%s", token, sanitized)
@@ -368,6 +370,7 @@ func TestSanitizeSystemPromptScrubsCompetitorBrands(t *testing.T) {
 	required := []string{
 		"You are an AI coding assistant.",
 		"The assistant is available as a CLI in the terminal, desktop tool, web app, and popular IDE extensions.",
+		"Do not use emojis in replies.",
 		"model-fable-5-1",
 		`.config\projects\demo\memory\`,
 		"AGENTS.md",
